@@ -1,131 +1,124 @@
-import numpy as np
-from data.data_loader import preprocess_data, split_data
-from utils.metrics import MSE
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-class layer:
-    def __init__(self, input: np.ndarray):
-        raise NotImplementedError
-    
-    def forward(self, x: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
-    
-    def backward(self, error: np.ndarray, learning_rate: float) -> np.ndarray:
-        raise NotImplementedError
-    
-    def step(self, learning_rate: float) -> None:
-        pass
 
-class linear(layer):
-    def __init__(self, input_dim: np.ndarray, output_dim: np.ndarray, momentum: float = 0.0, lambda_: float = 0.0):
-        self.weights = np.random.normal(loc=0, scale=0.01, size=(input_dim, output_dim))
-        self.bias = np.zeros((1, output_dim))
-        self.d_weights = np.zeros((input_dim, output_dim))
-        self.d_bias = np.zeros((1, output_dim))
-        self.momentum = momentum
-        self.lambda_ = lambda_
+class ConvBlock(nn.Module):
+    """Two 3×3 convs each followed by BN + ReLU."""
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
 
-    def forward(self, x: np.ndarray) -> np.ndarray:
-        self.input = x
-        self.output = np.dot(x, self.weights) + self.bias
-        return self.output
-    
-    def backward(self, upper_gradian: np.ndarray) -> np.ndarray:
-        
-        self.d_weights = np.dot(self.input.T, upper_gradian) + self.lambda_ * self.L2_derivative()
-        self.d_bias = np.sum(upper_gradian, axis=0, keepdims=True)
-        return np.dot(upper_gradian, self.weights.T)
-    
-    def step(self, learning_rate: float):
-        self.d_weights = self.momentum * self.d_weights + learning_rate * self.d_weights
-        self.d_bias = self.momentum * self.d_bias + learning_rate * self.d_bias
-        self.weights -= self.d_weights
-        self.bias -= self.d_bias
 
-    def L2_loss(self):
-        return 0.5 * self.lambda_ * np.sum(self.weights ** 2)
-    
-    def L2_derivative(self):
-        return self.lambda_ * self.weights
-    
-    def L1_loss(self):
-        return self.lambda_ * np.sum(np.abs(self.weights))
-
-    def L1_derivative(self):
-        return self.lambda_ * np.sign(self.weights)
-
-class relu(layer):
-
-    def __init__(self):
-        self.input = None
-    
-    def forward(self, x: np.ndarray) -> np.ndarray:
-        self.input = x
-        self.output = np.maximum(0, self.input)
-        return self.output
-
-    def backward(self, upper_gradian: np.ndarray) -> np.ndarray:
-        return upper_gradian * (self.input > 0)
-    
-class softmax(layer):
-    def __init__(self):
-        self.input = None
-    
-    def forward(self, x: np.ndarray) -> np.ndarray:
-        self.input = x - np.max(x, axis=1, keepdims=True)
-        self.output = np.exp(self.input) / np.sum(np.exp(self.input), axis=1, keepdims=True)
-        return self.output
-    
-    def backward(self, upper_gradian: np.ndarray) -> np.ndarray:
-        lower_gradian = np.empty_like(self.output)
-        
-        for i in range(self.output.shape[0]):
-            single_output = self.output[i].reshape(-1, 1)
-            jacobian = np.diagflat(single_output) - np.dot(single_output, single_output.T)
-            lower_gradian[i] = np.dot(jacobian, upper_gradian[i])
-        return lower_gradian
-
-class MLP:
-    def __init__(self, layers: list[layer], loss, learning_rate: float, momentum: float = 0.0, lambda_: float = 0.0):
-        self.layers = layers
-        self.loss = loss
-        self.learning_rate = learning_rate
-        self.momentum = momentum
-        self.lambda_ = lambda_
-        self.train = True
-
-    def forward(self, x: np.ndarray) -> np.ndarray:
-        for layer in self.layers:
-            x = layer.forward(x)
+    def forward(self, x):
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.relu(self.bn2(self.conv2(x)))
         return x
+
+
+class Down(nn.Module):
+    """Downscale with MaxPool then a ConvBlock."""
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.pool = nn.MaxPool2d(2)
+        self.conv = ConvBlock(in_channels, out_channels)
+
+
+    def forward(self, x):
+        x = self.pool(x)
+        x = self.conv(x)
+        return x
+
+
+class Up(nn.Module):
+    """Upscale, then concat with skip, then a ConvBlock."""
+    def __init__(self, in_channels: int, out_channels: int, use_transpose: bool = True):
+        super().__init__()
+        if use_transpose:
+            self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+        else:
+            # Bilinear upsample + 1×1 conv to reduce channels
+            self.up = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(in_channels, in_channels // 2, kernel_size=1)
+            )
+        self.conv = ConvBlock(in_channels, out_channels)
+
+
+    def forward(self, x, skip):
+        x = self.up(x)
+        # Handle possible misalignments due to odd sizes
+        if x.shape[-1] != skip.shape[-1] or x.shape[-2] != skip.shape[-2]:
+            x = F.interpolate(x, size=skip.shape[-2:], mode="bilinear", align_corners=False)
+        x = torch.cat([skip, x], dim=1)
+        x = self.conv(x)
+        return x
+
+
+class UNet(nn.Module):
+    def __init__(self, in_channels: int = 3, num_classes: int = 9, base_c: int = 64, use_transpose: bool = True):
+        super().__init__()
+        # Encoder
+        self.enc1 = ConvBlock(in_channels, base_c) # 64
+        self.enc2 = Down(base_c, base_c * 2) # 128
+        self.enc3 = Down(base_c * 2, base_c * 4) # 256
+        self.enc4 = Down(base_c * 4, base_c * 8) # 512
+
+        # Bottleneck
+        self.bottleneck = Down(base_c * 8, base_c * 16) # 1024
+
+        # Decoder
+        self.up4 = Up(base_c * 16, base_c * 8, use_transpose) # 1024→512
+        self.up3 = Up(base_c * 8, base_c * 4, use_transpose) # 512→256
+        self.up2 = Up(base_c * 4, base_c * 2, use_transpose) # 256→128
+        self.up1 = Up(base_c * 2, base_c, use_transpose) # 128→64
         
-    def backward(self) -> np.ndarray:
-        if not self.train:
-            return
-        error = self.loss.backward()
-        for layer in reversed(self.layers):
-            error = layer.backward(error)
+        # Head
+        self.head = nn.Conv2d(base_c, num_classes, kernel_size=1)
 
-    def compute_loss(self, input: np.ndarray, target: np.ndarray, need_to_onehot: bool = True) -> float:
-        main_loss = self.loss.forward(input, target, need_to_onehot)
-        l2_loss = sum(layer.L2_loss() for layer in self.layers if isinstance(layer, linear))
-        return main_loss + l2_loss
+
+        self.apply(self._init_weights)
+
+
+    @staticmethod
+    def _init_weights(m):
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+        elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+            nn.init.ones_(m.weight)
+            nn.init.zeros_(m.bias)
+        elif isinstance(m, nn.ConvTranspose2d):
+            nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+
+
+    def forward(self, x):
+        # Encoder
+        e1 = self.enc1(x)
+        e2 = self.enc2(e1)
+        e3 = self.enc3(e2)
+        e4 = self.enc4(e3)
+        b = self.bottleneck(e4)
+        # Decoder with skip connections
+        d4 = self.up4(b, e4)
+        d3 = self.up3(d4, e3)
+        d2 = self.up2(d3, e2)
+        d1 = self.up1(d2, e1)
+        logits = self.head(d1) # (N, 9, H, W)
+        return logits
     
-    def step(self):
-        if not self.train:
-            return
-        for layer in self.layers:
-            layer.step(self.learning_rate)
 
-    def save_weights(self, path: str, name: str):
-        for layer in self.layers:
-            if isinstance(layer, linear):
-                np.save(f"{path}/{name}_weights_{layer.weights.shape[0]}x{layer.weights.shape[1]}.npy", layer.weights)
-                np.save(f"{path}/{name}_bias_{layer.bias.shape[0]}x{layer.bias.shape[1]}.npy", layer.bias)
-
-    def load_weights(self, path: str, name: str):
-        for layer in self.layers:
-            if isinstance(layer, linear):
-                layer.weights = np.load(f"{path}/{name}_weights_{layer.weights.shape[0]}x{layer.weights.shape[1]}.npy")
-                layer.bias = np.load(f"{path}/{name}_bias_{layer.bias.shape[0]}x{layer.bias.shape[1]}.npy")
-
-
+if __name__ == "__main__":
+    model = UNet(in_channels=3, num_classes=9)
+    x = torch.randn(2, 3, 256, 256)
+    y = model(x)
+    print("Output:", y.shape) # Expect: (2, 9, 256, 256)
+    total_params = sum(p.numel() for p in model.parameters())
+    print("Params:", total_params)
