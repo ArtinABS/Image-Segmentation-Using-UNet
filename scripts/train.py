@@ -1,102 +1,185 @@
-import numpy as np
-from .evaluate import evaluate_loss
+import math
+import os
+from dataclasses import dataclass, asdict
+from typing import Optional, Dict, Any
 
-def train(model, x_train: np.ndarray, y_train: np.ndarray, x_cv: np.ndarray, y_cv: np.ndarray, epochs: int, batch_size: int, early_stopping: bool = False, patience: int = 10):
-        losses = []
-        cv_losses = []
-        accs_train = []
-        accs_cv = []
-        best_CV_loss = float('inf')
-        best_model = None
-        patience_counter = patience
-        for epoch in range(epochs):
-            loss = 0.0
-            acc_train = 0
-            total_train = 0
-            model.train = True
-            for i in range(0, len(x_train), batch_size):
-                batch_x = x_train[i:i+batch_size]
-                batch_y = y_train[i:i+batch_size]
+import torch
+from torch import nn
+from torch.utils.data import DataLoader
 
-                output = model.forward(batch_x)
-                total_train += len(batch_y)
-                predicted = np.argmax(output, axis=1)
-                acc_train += np.sum(predicted == batch_y)
-                loss += model.compute_loss(output, batch_y) * batch_size
-                
-                model.backward()
-                model.step()
+from utils.metrics import MetricTracker
+from config.config import TrainConfig
 
+from keras.api.utils import Progbar
 
-            cv_loss = 0.0
-            acc_cv = 0
-            total_cv = 0
-            model.train = False
-            for i in range(0, len(x_cv), batch_size):
-                batch_x = x_cv[i:i+batch_size]
-                batch_y = y_cv[i:i+batch_size]
-                output = model.forward(batch_x)
+class Trainer:
+    def __init__(
+        self,
+        model: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        criterion: nn.Module,
+        train_loader: DataLoader,
+        val_loader: Optional[DataLoader] = None,
+        scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+        device: Optional[torch.device] = None,
+        config: Optional[TrainConfig] = None,
+    ):
+        self.model = model
+        self.optimizer = optimizer
+        self.criterion = criterion
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.scheduler = scheduler
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.config = config or TrainConfig()
 
-                total_cv += len(batch_y)
-                predicted = np.argmax(output, axis=1)
-                acc_cv += np.sum(predicted == batch_y)
-                cv_loss += model.compute_loss(output, batch_y) * batch_size
+        self.model.to(self.device)
+        if isinstance(self.criterion, nn.Module):
+            self.criterion.to(self.device)
 
-            if early_stopping:
-                if cv_loss < best_CV_loss:
-                    best_CV_loss = cv_loss
-                    best_model = model
-                    patience_counter = patience
-                else:
-                    patience_counter -= 1
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.config.amp and self.device.type == "cuda")
+        os.makedirs(self.config.ckpt_dir, exist_ok=True)
 
-            if patience_counter <= 0:
-                if best_model is not None:
-                    model = best_model
+        self.best_score = -math.inf if self.config.best_metric == "miou" else math.inf
+        self.best_path = os.path.join(self.config.ckpt_dir, "best.pt")
+
+    def _step_scheduler(self, val_metric: Optional[float] = None):
+        if self.scheduler is None:
+            return
+        if hasattr(self.scheduler, "step"):
+            if self.config.scheduler_step_on == "val" and val_metric is not None:
+                try:
+                    self.scheduler.step(val_metric)
+                except TypeError:
+                    self.scheduler.step()
+            else:
+                self.scheduler.step()
+
+    def train_one_epoch(self, epoch: int) -> Dict[str, Any]:
+        self.model.train()
+        mt = MetricTracker(self.config.num_classes, self.config.ignore_index, self.device)
+
+        for step, (images, targets) in enumerate(self.train_loader, 1):
+            images = images.to(self.device, non_blocking=True)
+            targets = targets.to(self.device, non_blocking=True)
+
+            self.optimizer.zero_grad(set_to_none=True)
+            with torch.cuda.amp.autocast(enabled=self.scaler.is_enabled()):
+                logits = self.model(images)
+                loss = self.criterion(logits, targets)
+
+            self.scaler.scale(loss).backward()
+
+            if self.config.grad_clip_norm is not None:
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip_norm)
+
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+
+            mt.update(logits.detach(), targets, float(loss.detach().item()))
+
+            if step % self.config.log_interval == 0 or step == len(self.train_loader):
+                stats = mt.compute()
+                lr = self.optimizer.param_groups[0]["lr"]
+                print(f"Epoch {epoch} | Step {step}/{len(self.train_loader)} | "
+                      f"loss {stats['loss']:.4f} | mIoU {stats['miou']:.4f} | pixAcc {stats['pixel_acc']:.4f} | lr {lr:.3e}")
+
+        return mt.compute()
+
+    @torch.no_grad()
+    def validate(self) -> Dict[str, Any]:
+        if self.val_loader is None:
+            return {"loss": float("nan"), "miou": float("nan"), "pixel_acc": float("nan")}
+        self.model.eval()
+        mt = MetricTracker(self.config.num_classes, self.config.ignore_index, self.device)
+
+        for images, targets in self.val_loader:
+            images = images.to(self.device, non_blocking=True)
+            targets = targets.to(self.device, non_blocking=True)
+            logits = self.model(images)
+            loss = self.criterion(logits, targets)
+            mt.update(logits, targets, float(loss.item()))
+
+        stats = mt.compute()
+        print(f"Val | loss {stats['loss']:.4f} | mIoU {stats['miou']:.4f} | pixAcc {stats['pixel_acc']:.4f}")
+        return stats
+
+    def _is_improved(self, metric_value: float) -> bool:
+        if self.config.best_metric == "miou":
+            return metric_value > self.best_score
+        else:  # val_loss
+            return metric_value < self.best_score
+
+    def _save_checkpoint(self, path: str, epoch: int, extra: Optional[Dict[str, Any]] = None):
+        state = {
+            "epoch": epoch,
+            "model_state": self.model.state_dict(),
+            "optimizer_state": self.optimizer.state_dict(),
+            "scaler_state": self.scaler.state_dict(),
+            "config": asdict(self.config),
+        }
+        if self.scheduler is not None:
+            state["scheduler_state"] = self.scheduler.state_dict()
+        if extra:
+            state.update(extra)
+        torch.save(state, path)
+        print(f"Saved checkpoint: {path}")
+
+    def load_checkpoint(self, path: str, strict: bool = True) -> int:
+        ckpt = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(ckpt["model_state"], strict=strict)
+        self.optimizer.load_state_dict(ckpt["optimizer_state"])
+        if "scheduler_state" in ckpt and self.scheduler is not None:
+            self.scheduler.load_state_dict(ckpt["scheduler_state"])
+        try:
+            self.scaler.load_state_dict(ckpt["scaler_state"])
+        except Exception:
+            pass
+        print(f"Loaded checkpoint from {path} (epoch {ckpt.get('epoch','?')})")
+        return int(ckpt.get("epoch", 0))
+
+    def fit(self) -> Dict[str, Any]:
+        best_epoch = -1
+        no_improve = 0
+        history = {"train": [], "val": []}
+
+        pbar = Progbar(self.config.epochs, stateful_metrics=["Loss", "Accuracy"])
+
+        for epoch in range(1, self.config.epochs + 1):
+            train_stats = self.train_one_epoch(epoch)
+            history["train"].append(train_stats)
+
+            val_stats = self.validate()
+            history["val"].append(val_stats)
+
+            # Scheduler step
+            if self.config.scheduler_step_on == "val":
+                key = "miou" if self.config.best_metric == "miou" else "loss"
+                self._step_scheduler(val_stats[key])
+            else:
+                self._step_scheduler()
+
+            # Checkpointing
+            score = val_stats["miou"] if self.config.best_metric == "miou" else val_stats["loss"]
+            improved = self._is_improved(score)
+            if improved:
+                self.best_score = score
+                best_epoch = epoch
+                self._save_checkpoint(self.best_path, epoch, extra={"best_score": self.best_score})
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            if self.config.ckpt_every and (epoch % self.config.ckpt_every == 0):
+                last_path = os.path.join(self.config.ckpt_dir, f"epoch_{epoch}.pt")
+                self._save_checkpoint(last_path, epoch, extra={"best_score": self.best_score})
+
+            if self.config.early_stop_patience is not None and no_improve >= self.config.early_stop_patience:
+                print(f"Early stopping at epoch {epoch} (no improvement for {no_improve} epochs). Best at epoch {best_epoch}.")
                 break
 
-            epoch_train_loss = loss / total_train
-            epoch_cv_loss = cv_loss / total_cv
-            epoch_train_acc = acc_train / total_train
-            epoch_cv_acc = acc_cv / total_cv
-            
-            print(f"Epoch {epoch + 1} completed")
-            losses.append(epoch_train_loss)
-            print(f"Train Loss: {losses[-1]}")
-            cv_losses.append(epoch_cv_loss)
-            print(f"CV Loss: {cv_losses[-1]}")
-            accs_train.append(epoch_train_acc)
-            print(f"Train Accuracy: {accs_train[-1]}")
-            accs_cv.append(epoch_cv_acc)
-            print(f"CV Accuracy: {accs_cv[-1]}")
+        print(f"Training done. Best {self.config.best_metric}: {self.best_score:.4f} at epoch {best_epoch}.")
+        return {"history": history, "best": {"epoch": best_epoch, self.config.best_metric: self.best_score}}
 
-
-        return losses, cv_losses, accs_train, accs_cv
-
-
-def train_LE(model, x_train: np.ndarray, y_train: np.ndarray, x_cv: np.ndarray, y_cv: np.ndarray, epochs: int, batch_size: int):
-    losses = []
-    for epoch in range(epochs):
-        loss = 0.0
-        total_train = 0
-        model.train = True
-        for i in range(0, len(x_train), batch_size):
-            batch_x = x_train[i:i+batch_size]
-            batch_y = y_train[i:i+batch_size]
-            output = model.forward(batch_x)
-
-            total_train += len(batch_y)
-            loss += model.compute_loss(output, batch_y, False) * batch_size
-            model.backward()
-            model.step()
-
-        epoch_train_loss = loss / total_train
-        
-        print(f"Epoch {epoch + 1} completed")
-        print(f"Train Loss: {epoch_train_loss}")
-        losses.append(epoch_train_loss)
-
-
-    return losses
-    
 
