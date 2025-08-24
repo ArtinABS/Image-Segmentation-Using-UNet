@@ -1,33 +1,3 @@
-import numpy as np
-import yaml
-import logging
-import logging
-import yaml
-from datetime import datetime
-from models.model import MLP, linear, relu, softmax
-from utils.metrics import MSE, CrossEntropy
-from data.data_loader import split_data, preprocess_data, data_loader_MNIST, data_loader_SVHN, preprocess_data_SVHN, data_loader_LE, preprocess_data_split_LE
-from scripts.train import train, train_LE
-from utils.visualization import plot, plot_predictions, plot_confusion_matrix, plot_loss
-from config.config import Config
-from scripts.evaluate import evaluate_loss, evaluate_accuracy
-
-np.random.seed(42)
-
-
-
-log_data = {
-   "logs": []
-}
-
-def log_message(message):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_entry = f"[{timestamp}] {message}"
-    log_data["logs"].append(log_entry)
-    logging.info(message)
-
-log_file = "D:/Deep/Assignment 1/config/logging.yaml"
-
 from models.model import UNet
 from data.data_loader import get_dataloader
 from scripts.train import Trainer
