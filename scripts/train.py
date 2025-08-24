@@ -144,7 +144,7 @@ class Trainer:
         no_improve = 0
         history = {"train": [], "val": []}
 
-        pbar = Progbar(self.config.epochs, stateful_metrics=["Loss", "Accuracy"])
+        pbar = Progbar(target=self.config.epochs, stateful_metrics=["loss","mIoU","pixAcc","lr"])
 
         for epoch in range(1, self.config.epochs + 1):
             train_stats = self.train_one_epoch(epoch)
@@ -152,6 +152,13 @@ class Trainer:
 
             val_stats = self.validate()
             history["val"].append(val_stats)
+
+            pbar.add(1, values=[
+                ("loss", float(val_stats["loss"])),
+                ("mIoU", float(val_stats["miou"])),
+                ("pixAcc", float(val_stats["pixel_acc"])),
+                ("lr", float(self.optimizer.param_groups[0]["lr"]))
+            ])
 
             # Scheduler step
             if self.config.scheduler_step_on == "val":
