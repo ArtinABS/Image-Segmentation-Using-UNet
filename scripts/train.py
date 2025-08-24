@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from utils.metrics import MetricTracker
 from config.config import TrainConfig
 
-from keras.api.utils import Progbar
+from tqdm.auto import tqdm
 
 class Trainer:
     def __init__(
@@ -144,7 +144,7 @@ class Trainer:
         no_improve = 0
         history = {"train": [], "val": []}
 
-        pbar = Progbar(target=self.config.epochs, stateful_metrics=["loss","mIoU","pixAcc","lr"])
+        pbar = tqdm(total=self.config.epochs, desc="Epochs", leave=True)
 
         for epoch in range(1, self.config.epochs + 1):
             train_stats = self.train_one_epoch(epoch)
@@ -153,12 +153,13 @@ class Trainer:
             val_stats = self.validate()
             history["val"].append(val_stats)
 
-            pbar.add(1, values=[
-                ("loss", float(val_stats["loss"])),
-                ("mIoU", float(val_stats["miou"])),
-                ("pixAcc", float(val_stats["pixel_acc"])),
-                ("lr", float(self.optimizer.param_groups[0]["lr"]))
-            ])
+            pbar.set_postfix({
+                "loss": f"{val_stats['loss']:.4f}",
+                "mIoU": f"{val_stats['miou']:.4f}",
+                "pixAcc": f"{val_stats['pixel_acc']:.4f}",
+                "lr": f"{self.optimizer.param_groups[0]['lr']:.3e}",
+            })
+            pbar.update(1)
 
             # Scheduler step
             if self.config.scheduler_step_on == "val":
