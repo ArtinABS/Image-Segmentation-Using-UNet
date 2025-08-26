@@ -57,7 +57,14 @@ class Trainer:
 
     def train_one_epoch(self, epoch: int) -> Dict[str, Any]:
         self.model.train()
-        mt = MetricTracker(self.config.num_classes, self.config.ignore_index, self.device)
+        mt = MetricTracker(self.config.num_classes, self.device)
+
+        batch_bar = tqdm(
+            total=len(self.train_loader),
+            desc=f"Train | Epoch {epoch}",
+            leave=False,
+            position=1,
+        )
 
         for step, (images, targets) in enumerate(self.train_loader, 1):
             images = images.to(self.device, non_blocking=True)
@@ -77,22 +84,38 @@ class Trainer:
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
+            # update metrics
             mt.update(logits.detach(), targets, float(loss.detach().item()))
 
-            if step % self.config.log_interval == 0 or step == len(self.train_loader):
-                stats = mt.compute()
-                lr = self.optimizer.param_groups[0]["lr"]
-                print(f"Epoch {epoch} | Step {step}/{len(self.train_loader)} | "
-                      f"loss {stats['loss']:.4f} | mIoU {stats['miou']:.4f} | pixAcc {stats['pixel_acc']:.4f} | lr {lr:.3e}")
+            # live stats on the batch bar
+            stats = mt.compute()
+            lr = self.optimizer.param_groups[0]["lr"]
+            batch_bar.set_postfix({
+                "loss": f"{stats['loss']:.4f}",
+                "mIoU": f"{stats['miou']:.4f}",
+                "pixAcc": f"{stats['pixel_acc']:.4f}",
+                "lr": f"{lr:.3e}",
+                "step": f"{step}/{len(self.train_loader)}"
+            })
+            batch_bar.update(1)
 
+        batch_bar.close()
         return mt.compute()
+
 
     @torch.no_grad()
     def validate(self) -> Dict[str, Any]:
         if self.val_loader is None:
             return {"loss": float("nan"), "miou": float("nan"), "pixel_acc": float("nan")}
         self.model.eval()
-        mt = MetricTracker(self.config.num_classes, self.config.ignore_index, self.device)
+        mt = MetricTracker(self.config.num_classes, self.device)
+
+        val_bar = tqdm(
+            total=len(self.val_loader),
+            desc="Validate",
+            leave=False,
+            position=1,
+        )
 
         for images, targets in self.val_loader:
             images = images.to(self.device, non_blocking=True)
@@ -101,9 +124,19 @@ class Trainer:
             loss = self.criterion(logits, targets)
             mt.update(logits, targets, float(loss.item()))
 
+            stats = mt.compute()
+            val_bar.set_postfix({
+                "loss": f"{stats['loss']:.4f}",
+                "mIoU": f"{stats['miou']:.4f}",
+                "pixAcc": f"{stats['pixel_acc']:.4f}",
+            })
+            val_bar.update(1)
+
+        val_bar.close()
         stats = mt.compute()
         print(f"Val | loss {stats['loss']:.4f} | mIoU {stats['miou']:.4f} | pixAcc {stats['pixel_acc']:.4f}")
         return stats
+
 
     def _is_improved(self, metric_value: float) -> bool:
         if self.config.best_metric == "miou":
@@ -144,7 +177,7 @@ class Trainer:
         no_improve = 0
         history = {"train": [], "val": []}
 
-        pbar = tqdm(total=self.config.epochs, desc="Epochs", leave=True)
+        epoch_bar = tqdm(total=self.config.epochs, desc="Epochs", leave=True, position=0)
 
         for epoch in range(1, self.config.epochs + 1):
             train_stats = self.train_one_epoch(epoch)
@@ -153,13 +186,13 @@ class Trainer:
             val_stats = self.validate()
             history["val"].append(val_stats)
 
-            pbar.set_postfix({
-                "loss": f"{val_stats['loss']:.4f}",
-                "mIoU": f"{val_stats['miou']:.4f}",
-                "pixAcc": f"{val_stats['pixel_acc']:.4f}",
+            epoch_bar.set_postfix({
+                "val_loss": f"{val_stats['loss']:.4f}",
+                "val_mIoU": f"{val_stats['miou']:.4f}",
+                "val_pixAcc": f"{val_stats['pixel_acc']:.4f}",
                 "lr": f"{self.optimizer.param_groups[0]['lr']:.3e}",
             })
-            pbar.update(1)
+            epoch_bar.update(1)
 
             # Scheduler step
             if self.config.scheduler_step_on == "val":
@@ -187,7 +220,9 @@ class Trainer:
                 print(f"Early stopping at epoch {epoch} (no improvement for {no_improve} epochs). Best at epoch {best_epoch}.")
                 break
 
+        epoch_bar.close()
         print(f"Training done. Best {self.config.best_metric}: {self.best_score:.4f} at epoch {best_epoch}.")
         return {"history": history, "best": {"epoch": best_epoch, self.config.best_metric: self.best_score}}
+
 
 

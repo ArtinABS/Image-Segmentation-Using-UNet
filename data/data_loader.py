@@ -1,9 +1,12 @@
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
+import torchvision.transforms.functional as F
 from PIL import Image
 import os
 import glob
 from PIL import Image
+import torch
+import torch.nn.functional as FA
 
 
 class EasyPortrait(Dataset):
@@ -30,18 +33,21 @@ class EasyPortrait(Dataset):
         img_path = self.image_paths[idx]
         output_path = self.output_paths[idx]
 
-        image = Image.open(img_path)
-        output = Image.open(output_path)
+        image = Image.open(img_path).convert("RGB")
+        output = Image.open(output_path).convert("L")
+        output = F.pil_to_tensor(output)
 
         if self.transform:
             image = self.transform(image)
-            output = self.transform(output)
 
-        return image, output
+        output = output.squeeze(0).long()
+        output_onehot = FA.one_hot(output, num_classes=9)
+        output_onehot = output_onehot.permute(2, 0, 1).float()
+
+        return image, output_onehot
 
 
-def get_dataloader(input_size=256, batch_size=16):
-    DATA_DIR = "C:/Users/AmirHosein/Desktop/resized"
+def get_dataloader(root: str, input_size=256, batch_size=16):
 
     imagenet_mean = [0.485, 0.456, 0.406]
     imagenet_std = [0.229, 0.224, 0.225]
@@ -61,14 +67,14 @@ def get_dataloader(input_size=256, batch_size=16):
     ])
 
     # --- Datasets and DataLoaders ---
-    train_dataset =  EasyPortrait(root_dir=DATA_DIR, type="train", transform=train_transform)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+    train_dataset =  EasyPortrait(root_dir=root, type="train", transform=train_transform)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
 
-    val_dataset =  EasyPortrait(root_dir=DATA_DIR, type="val", transform=test_transform)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    val_dataset =  EasyPortrait(root_dir=root, type="val", transform=test_transform)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=4, shuffle=False)
 
-    test_dataset =  EasyPortrait(root_dir=DATA_DIR, type="test", transform=test_transform)
+    test_dataset =  EasyPortrait(root_dir=root, type="test", transform=test_transform)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     print(f"Found {len(train_dataset)} images for training.")
@@ -76,3 +82,10 @@ def get_dataloader(input_size=256, batch_size=16):
     print(f"Found {len(test_dataset)} images for testing.")
 
     return train_loader, val_loader, test_loader
+
+# train_loader, val_loader, test_loader = get_dataloader(
+#         root="C:/Users/AmirHosein/Desktop/resized",
+#         batch_size=16,
+#         input_size=256,
+#     )
+

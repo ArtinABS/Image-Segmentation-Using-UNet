@@ -61,7 +61,7 @@ class TrainConfig:
     scheduler_step_on: str = "epoch"      # or "val"
     early_stop_patience: Optional[int] = None
     num_classes: int = 9
-    ignore_index: Optional[int] = None    # set to e.g. 255 if masks have void label
+    batch_size: int = 100
 
     # --- Save config to JSON file ---
     def save(self, path: str):
