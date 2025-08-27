@@ -1,4 +1,3 @@
-# scripts/webcam_demo.py
 import argparse
 import time
 import cv2
@@ -63,7 +62,7 @@ def main():
     torch.backends.cudnn.benchmark = True
 
     # ---- build model & load weights ----
-    model = UNet(in_channels=3, num_classes=args.num_classes).to(device)
+    model = UNet(in_channels=3, num_classes=args.num_classes, use_transpose=False).to(device)
     ckpt = torch.load(args.weights, map_location=device)
     state = ckpt.get("model_state", ckpt)  # support both raw state_dict or Trainer checkpoint
     model.load_state_dict(state, strict=True)

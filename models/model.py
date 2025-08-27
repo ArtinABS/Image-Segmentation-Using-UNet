@@ -11,16 +11,16 @@ class ConvBlock(nn.Module):
             "instance": lambda c: nn.InstanceNorm2d(c, affine=True),
             "group": lambda c: nn.GroupNorm(num_groups=min(gn_groups, c), num_channels=c),
         }[norm]
-        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=True)
         self.n1 = Norm(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=True)
         self.n2 = Norm(out_channels)
         self.relu = nn.ReLU(inplace=True)
         self.drop = nn.Dropout2d(p_drop) if p_drop > 0 else nn.Identity()
 
     def forward(self, x):
         x = self.relu(self.n1(self.conv1(x)))
-        x = self.drop(x)
+        # x = self.drop(x)
         x = self.relu(self.n2(self.conv2(x)))
         return x
 
@@ -34,8 +34,8 @@ class Down(nn.Module):
 
 
     def forward(self, x):
-        x = self.pool(x)
         x = self.conv(x)
+        x = self.pool(x)
         return x
 
 
@@ -49,7 +49,7 @@ class Up(nn.Module):
             # Bilinear upsample + 1×1 conv to reduce channels
             self.up = nn.Sequential(
             nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
-            nn.Conv2d(in_channels, in_channels // 2, kernel_size=1)
+            nn.Conv2d(in_channels, in_channels // 2, kernel_size=3)
             )
         self.conv = ConvBlock(in_channels, out_channels)
 

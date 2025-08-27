@@ -1,96 +1,60 @@
-import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import confusion_matrix
+from data.data_loader import *
+import numpy as np
 
-from data.data_loader import data_loader_MNIST, data_loader_SVHN
+def show_random_samples(dataloader, num_samples=5, dataset_mean=[0.485, 0.456, 0.406], dataset_std=[0.5, 0.5, 0.5]):
+    """
+    Displays random image-mask pairs from a given dataloader.
 
-def data_exploration():
-    train_data, test_data = data_loader_MNIST()
+    Args:
+        dataloader (torch.utils.data.DataLoader): The DataLoader to draw samples from.
+        num_samples (int): The number of random samples to display.
+        dataset_mean (list): Mean values used for normalization during dataset creation.
+        dataset_std (list): Standard deviation values used for normalization.
+    """
+    if num_samples > dataloader.batch_size:
+        print(f"Warning: num_samples ({num_samples}) is greater than dataloader batch_size ({dataloader.batch_size}). Will display {dataloader.batch_size} samples.")
+        num_samples = dataloader.batch_size
 
-    train_data.columns = test_data.columns
-    
-    data = pd.concat([train_data, test_data], ignore_index=True)
-    number = data.iloc[:, 0]
-    unique_numbers = number.unique()
-    images = data.iloc[:, 1:]
-    index = 1
+    # Get one batch of data
+    images, masks_onehot = next(iter(dataloader))
 
-    
-    for i in unique_numbers:
-        label = int(i)
-        images_for_label = images[number == label]
-        random_images = images_for_label.sample(n=5)
+    plt.figure(figsize=(6, 3 * num_samples))
+    for i in range(num_samples):
+        # Denormalize image
+        image = images[i].cpu().numpy().transpose((1, 2, 0)) # C, H, W -> H, W, C
+        mean = np.array(dataset_mean)
+        std = np.array(dataset_std)
+        image = std * image + mean
+        image = np.clip(image, 0, 1) # Clip to [0, 1] range
 
-        for random_image in random_images.iterrows():
-            plt.subplot(len(unique_numbers), 5, index)
-            index += 1
-            plt.axis('off')
-            image_data = random_image[1].values[:784]
-            plt.imshow(image_data.reshape(28, 28), cmap='gray')
-            plt.title(f"Label: {label}")
-        
-    plt.figure(figsize=(10, 10))
-    plt.subplots_adjust(hspace=0.8)
-    plt.show()
+        # Convert one-hot mask to single channel mask
+        # Masks_onehot shape: (B, num_classes, H, W)
+        mask = torch.argmax(masks_onehot[i], dim=0).cpu().numpy() # H, W
 
-    plt.figure(figsize=(10, 6))
-    number_counts = number.value_counts().sort_index()
-    sns.barplot(x=number_counts.index, y=number_counts.values)
-    plt.title('Distribution of Numbers in Dataset')
-    plt.xlabel('Number Label')
-    plt.ylabel('Count')
-    plt.show()
+        # Plot Image
+        plt.subplot(num_samples, 2, 2*i + 1)
+        plt.imshow(image)
+        plt.title(f"Sample {i+1} Image")
+        plt.axis('off')
 
-def plot(losses, cv_losses, acc_train, acc_cv):
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-    axes[0].plot(losses, label="Training Loss")
-    axes[0].plot(cv_losses, label="CV Loss")
-    axes[0].set_xlabel("Epochs")
-    axes[0].set_ylabel("Loss")
-    axes[0].set_title("Base Model Training and CV Loss")
-    axes[0].legend()
-    
-    axes[1].plot(acc_train, label="Training Accuracy")
-    
-    axes[1].plot(acc_cv, label="CV Accuracy")
-    axes[1].set_xlabel("Epochs")
-    axes[1].set_ylabel("Accuracy")
-    axes[1].set_title("Base Model Training and CV Accuracy")
-    axes[1].legend()
-    
+        # Plot Mask
+        plt.subplot(num_samples, 2, 2*i + 2)
+        plt.imshow(mask, cmap='viridis') # Use a colormap for masks
+        plt.title(f"Sample {i+1} Mask")
+        plt.axis('off')
     plt.tight_layout()
     plt.show()
 
-def plot_loss(losses):
-    plt.xlabel("epoch")
-    plt.ylabel("loss")
-    plt.legend()
-    plt.plot(losses)
-    plt.show()
+if __name__ == '__main__':
+    train_loader, val_loader, test_loader = get_dataloader(
+        root="C:/Users/AmirHosein/Desktop/resized",
+        batch_size=8, # Use a smaller batch size for demonstration
+        input_size=256,
+    )
 
-def plot_predictions(y_pred, y_test, title, y_label, x_label):
-    plt.figure(figsize=(10, 5))
+    print("\nDisplaying 5 random samples from the Training DataLoader:")
+    show_random_samples(train_loader, num_samples=5)
 
-    plt.scatter(y_test, y_pred, alpha=0.6, color='blue', label=title)
-
-    min_val = min(y_test.min(), y_pred.min())
-    max_val = max(y_test.max(), y_pred.max())
-    plt.plot([min_val, max_val], [min_val, max_val], linestyle="--", color="red", label="Perfect Fit (y = x)")
-    
-    plt.xlabel(x_label)
-    plt.ylabel(y_label)
-    plt.title(title)
-    plt.legend()
-    plt.show()
-
-def plot_confusion_matrix(y_true, y_pred):
-    cm = confusion_matrix(y_true, y_pred)
-    plt.figure(figsize=(10, 10))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=range(10), yticklabels=range(10))
-    plt.xlabel('Predicted')
-    plt.ylabel('True')
-    plt.show()
-
+    # print("\nDisplaying 5 random samples from the Validation DataLoader:")
+    # show_random_samples(val_loader, num_samples=5)

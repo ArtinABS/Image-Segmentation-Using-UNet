@@ -25,7 +25,7 @@ def main():
         criterion=criterion,
         train_loader=train_loader,
         val_loader=val_loader,
-        scheduler=scheduler,
+        scheduler=None,
         config=cfg,
     )
     trainer.fit()
