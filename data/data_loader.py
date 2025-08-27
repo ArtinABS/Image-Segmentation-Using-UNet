@@ -83,9 +83,3 @@ def get_dataloader(root: str, input_size=256, batch_size=16):
 
     return train_loader, val_loader, test_loader
 
-# train_loader, val_loader, test_loader = get_dataloader(
-#         root="C:/Users/AmirHosein/Desktop/resized",
-#         batch_size=16,
-#         input_size=256,
-#     )
-

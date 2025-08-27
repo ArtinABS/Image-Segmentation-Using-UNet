@@ -9,7 +9,7 @@ def main():
     cfg = TrainConfig(epochs=40, num_classes=9, batch_size=32)
 
     train_loader, val_loader, test_loader = get_dataloader(
-        root="C:/Users/AmirHosein/Desktop/resized",
+        root="C:/Users/pouya/Desktop/resized",
         batch_size=cfg.batch_size,
         input_size=256,
     )

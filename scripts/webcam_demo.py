@@ -4,8 +4,6 @@ import cv2
 import numpy as np
 import torch
 
-# === IMPORT YOUR MODEL CLASS ===
-# If you put UNet in models/model.py and exported it in models/__init__.py:
 from models.model import UNet
 
 # ---- colors for 9 classes (BGR for OpenCV) ----
