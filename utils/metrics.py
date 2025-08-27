@@ -1,4 +1,3 @@
-# utils/metrics.py
 from typing import Dict, Any
 import torch
 
@@ -16,7 +15,12 @@ class MetricTracker:
     @torch.no_grad()
     def update(self, logits: torch.Tensor, targets: torch.Tensor, loss_val: float):
         # logits: (N,C,H,W)
-        self.total_loss += float(loss_val) * logits.shape[0] * logits.shape[2] * logits.shape[3]
+        batch_size = logits.shape[0]
+        height = logits.shape[2]
+        width = logits.shape[3]
+
+        self.total_loss += float(loss_val) * batch_size * height * width
+        self.total_examples += batch_size * height * width
 
         preds = torch.argmax(logits, dim=1)  # (N,H,W)
 
@@ -44,7 +48,6 @@ class MetricTracker:
         binc = torch.bincount(k, minlength=self.num_classes ** 2)
         self.cm += binc.view(self.num_classes, self.num_classes)
 
-
     def compute(self) -> Dict[str, Any]:
         eps = 1e-7
         loss = self.total_loss / max(self.total_examples, 1)
@@ -58,9 +61,12 @@ class MetricTracker:
         miou = iou.mean().item()
         pixel_acc = tp.sum().item() / (pos.sum().item() + eps)
 
+        # Avoid division by zero for per-class IoU if a class doesn't appear
+        per_class_iou = iou.detach().cpu().tolist()
+
         return {
             "loss": loss,
             "miou": miou,
             "pixel_acc": pixel_acc,
-            "per_class_iou": iou.detach().cpu().tolist(),
+            "per_class_iou": per_class_iou,
         }

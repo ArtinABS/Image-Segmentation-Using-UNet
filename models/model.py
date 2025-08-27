@@ -4,19 +4,24 @@ import torch.nn.functional as F
 
 
 class ConvBlock(nn.Module):
-    """Two 3×3 convs each followed by BN + ReLU."""
-    def __init__(self, in_channels: int, out_channels: int):
+    def __init__(self, in_channels: int, out_channels: int, norm: str = "group", gn_groups: int = 8, p_drop: float = 0.0):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
+        Norm = {
+            "batch": lambda c: nn.BatchNorm2d(c),
+            "instance": lambda c: nn.InstanceNorm2d(c, affine=True),
+            "group": lambda c: nn.GroupNorm(num_groups=min(gn_groups, c), num_channels=c),
+        }[norm]
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, padding=1, bias=False)
+        self.n1 = Norm(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1, bias=False)
+        self.n2 = Norm(out_channels)
         self.relu = nn.ReLU(inplace=True)
-
+        self.drop = nn.Dropout2d(p_drop) if p_drop > 0 else nn.Identity()
 
     def forward(self, x):
-        x = self.relu(self.bn1(self.conv1(x)))
-        x = self.relu(self.bn2(self.conv2(x)))
+        x = self.relu(self.n1(self.conv1(x)))
+        x = self.drop(x)
+        x = self.relu(self.n2(self.conv2(x)))
         return x
 
 
